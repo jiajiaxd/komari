@@ -30,7 +30,7 @@ func CheckKomariVersion(constraint string) error {
 	if err != nil {
 		return fmt.Errorf("invalid komari version constraint %q: %w", constraint, err)
 	}
-	have, err := parseSemver(utils.CurrentVersion)
+	have, err := parseSemver(strings.TrimSuffix(utils.CurrentVersion, "-fork"))
 	if err != nil {
 		// A malformed server version must not block plugin loading.
 		return nil

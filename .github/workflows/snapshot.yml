@@ -54,7 +54,7 @@ jobs:
         id: version
         run: |
           # Snapshot 版本号格式: Snapshot-yymmddhhMM (UTC+8)
-          VERSION="Snapshot-$(date -u -d '+8 hours' +%y%m%d%H%M)"
+          VERSION="Snapshot-$(date -u -d '+8 hours' +%y%m%d%H%M)-fork"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Snapshot version: ${VERSION}"
 

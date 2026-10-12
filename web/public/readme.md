@@ -4,7 +4,7 @@
 
 ### Frontend Repository
 
-- **Frontend project repository**: https://github.com/komari-monitor/komari-web
+- **Frontend project repository**: https://github.com/jiajiaxd/komari-web
 
 ### Build Requirements
 
@@ -15,7 +15,7 @@
 
 ### Important Note
 
-⚠️ **The projects under Akizon77's personal repository are no longer maintained. Please use the projects under the organization (komari-monitor).**
+⚠️ **The projects under Akizon77's personal repository are no longer maintained. Please use the projects under the fork (jiajiaxd).**
 
 ---
 
@@ -23,7 +23,7 @@
 
 ### 前端项目仓库
 
-- **前端项目地址**: https://github.com/komari-monitor/komari-web
+- **前端项目地址**: https://github.com/jiajiaxd/komari-web
 
 ### 构建要求
 
@@ -34,7 +34,7 @@
 
 ### 重要提醒
 
-⚠️ **Akizon77 个人仓库的项目已经不再使用，请使用组织（komari-monitor）下的项目。**
+⚠️ **Akizon77 个人仓库的项目已经不再使用，请使用fork（jiajiaxd）下的项目。**
 
 ---
 
@@ -42,7 +42,7 @@
 
 ### フロントエンドプロジェクトリポジトリ
 
-- **フロントエンドプロジェクトアドレス**: https://github.com/komari-monitor/komari-web
+- **フロントエンドプロジェクトアドレス**: https://github.com/jiajiaxd/komari-web
 
 ### ビルド要件
 
@@ -53,7 +53,7 @@
 
 ### 重要な注意事項
 
-⚠️ **Akizon77 の個人リポジトリのプロジェクトは使用されなくなりました。組織（komari-monitor）下のプロジェクトを使用してください。**
+⚠️ **Akizon77 の個人リポジトリのプロジェクトは使用されなくなりました。フォーク（jiajiaxd）下のプロジェクトを使用してください。**
 
 ---
 
@@ -61,7 +61,7 @@
 
 ```bash
 # Clone frontend repository / 克隆前端仓库 / フロントエンドリポジトリをクローン
-git clone https://github.com/komari-monitor/komari-web
+git clone https://github.com/jiajiaxd/komari-web
 cd komari-web
 
 # Install dependencies and build / 安装依赖并构建 / 依存関係をインストールしてビルド
