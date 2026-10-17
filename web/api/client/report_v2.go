@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/database/tasks"
+	"github.com/komari-monitor/komari/internal/loginaudit"
 	v2 "github.com/komari-monitor/komari/protocol/v2"
 	"github.com/komari-monitor/komari/utils/notifier"
 	agent_runtime "github.com/komari-monitor/komari/web/agent"
@@ -125,6 +126,14 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 			return v2.Error(req.ID, -32004, "unknown or expired startup configuration request", nil)
 		}
 		return v2.Success(req.ID, gin.H{"status": "success"})
+	case v2.MethodAgentLoginEvent:
+		var params v2.LoginEventParams
+		if err := bindV2Params(req.Params, &params); err != nil {
+			return v2.Error(req.ID, -32602, "invalid login event params", err.Error())
+		}
+		// 只入队，属地查询、入库与通知在后台完成，不阻塞 agent
+		accepted := loginaudit.Enqueue(uuid, params.Events)
+		return v2.Success(req.ID, gin.H{"status": "success", "accepted": accepted})
 	default:
 		return v2.Error(req.ID, -32601, "method not found", req.Method)
 	}

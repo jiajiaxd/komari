@@ -202,6 +202,8 @@ func registerAdminRoutes(r *gin.Engine) {
 	}
 
 	g.GET("/logs", jsonRpc.Bind("admin:getLogs", jsonRpc.WithQuery("limit", "page")))
+	g.GET("/login-records", jsonRpc.Bind("admin:getLoginRecords", jsonRpc.WithQuery("limit", "page", "uuid", "untrusted_only")))
+	g.POST("/login-records/clear", jsonRpc.Bind("admin:clearLoginRecords"))
 
 	// plugins: 安装流程通过统一的分片上传接口，启停/列表/日志走 RPC2，市场对齐主题市场。
 	pluginGroup := g.Group("/plugin")

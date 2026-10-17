@@ -17,6 +17,7 @@ import (
 	"github.com/komari-monitor/komari/database/tasks"
 	"github.com/komari-monitor/komari/internal/config"
 	"github.com/komari-monitor/komari/internal/lifecycle"
+	"github.com/komari-monitor/komari/internal/loginaudit"
 	"github.com/komari-monitor/komari/internal/metricstore"
 	"github.com/komari-monitor/komari/pkg/rpc"
 )
@@ -155,6 +156,9 @@ func adminEditSettings(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err := validateMetricRollupSettingChanges(cfg); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
+	if err := validateLoginMonitorSettingChanges(cfg); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
 
 	// 若本次修改涉及 metrics 数据库配置，则在落库前先用「当前配置 + 本次改动」
 	// 合并出的目标配置做一次连接测试。metric store 始终启用，只要触及 metrics
@@ -289,6 +293,35 @@ func validateMetricRollupSettingChanges(cfg map[string]interface{}) error {
 		n, err := metricRollupSettingInt(value)
 		if err != nil || n <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)
+		}
+	}
+	return nil
+}
+
+func validateLoginMonitorSettingChanges(cfg map[string]interface{}) error {
+	for _, key := range []string{config.LoginHistoryRetentionDaysKey, config.LoginHistoryMaxRecordsKey} {
+		value, ok := cfg[key]
+		if !ok {
+			continue
+		}
+		n, err := metricRollupSettingInt(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("%s must be a positive integer", key)
+		}
+		cfg[key] = n
+	}
+	if value, ok := cfg[config.LoginTrustedIPsKey]; ok {
+		s, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", config.LoginTrustedIPsKey)
+		}
+		if _, invalid := loginaudit.ParseTrustedIPs(s); len(invalid) > 0 {
+			return fmt.Errorf("invalid IP or CIDR in %s: %s", config.LoginTrustedIPsKey, strings.Join(invalid, ", "))
+		}
+	}
+	if value, ok := cfg[config.LoginAllowedRegionsKey]; ok {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s must be a string", config.LoginAllowedRegionsKey)
 		}
 	}
 	return nil

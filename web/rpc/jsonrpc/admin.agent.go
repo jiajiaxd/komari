@@ -28,6 +28,17 @@ func init() {
 		Returns: "{ queued: true }",
 		Example: map[string]any{"uuid": "agent-uuid", "version": "1.2.*"},
 	})
+	RegisterWithGroupAndMeta("switchAgentVersionBatch", rpc.RoleAdmin, adminSwitchAgentVersionBatch, &rpc.MethodMeta{
+		Name:        "admin:switchAgentVersionBatch",
+		Summary:     "Request a version switch for several agents",
+		Description: "Queues a fire-and-forget version switch for each online v2 agent and reports the per-agent outcome.",
+		Params: []rpc.ParamMeta{
+			{Name: "uuids", Type: "string[]", Required: true, Description: "Target agent UUIDs"},
+			{Name: "version", Type: "string", Required: true, Description: "latest, a version line such as 1.2.*, or an exact version"},
+		},
+		Returns: "{ results: { [uuid]: \"queued\" | \"offline\" | \"unsupported\" | \"error\" } }",
+		Example: map[string]any{"uuids": []string{"agent-uuid"}, "version": "latest"},
+	})
 	rpc.MarkSensitive("admin:getAgentStartupConfig")
 }
 
@@ -77,4 +88,33 @@ func adminSwitchAgentVersion(_ context.Context, req *rpc.JsonRpcRequest) (any, *
 		}
 	}
 	return map[string]any{"queued": true}, nil
+}
+
+func adminSwitchAgentVersionBatch(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var params struct {
+		UUIDs   []string `json:"uuids"`
+		Version string   `json:"version"`
+	}
+	if err := req.BindParams(&params); err != nil || len(params.UUIDs) == 0 || strings.TrimSpace(params.Version) == "" {
+		return nil, rpc.MakeError(rpc.InvalidParams, "uuids and version are required", nil)
+	}
+	results := make(map[string]string, len(params.UUIDs))
+	for _, uuid := range params.UUIDs {
+		uuid = strings.TrimSpace(uuid)
+		if uuid == "" {
+			continue
+		}
+		err := agent_runtime.SwitchAgentVersion(uuid, params.Version)
+		switch {
+		case err == nil:
+			results[uuid] = "queued"
+		case errors.Is(err, agent_runtime.ErrSwitchVersionOffline):
+			results[uuid] = "offline"
+		case errors.Is(err, agent_runtime.ErrSwitchVersionUnsupported):
+			results[uuid] = "unsupported"
+		default:
+			results[uuid] = "error"
+		}
+	}
+	return map[string]any{"results": results}, nil
 }

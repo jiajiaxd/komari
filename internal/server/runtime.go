@@ -17,6 +17,7 @@ import (
 	"github.com/komari-monitor/komari/database/tasks"
 	"github.com/komari-monitor/komari/internal/config"
 	"github.com/komari-monitor/komari/internal/lifecycle"
+	"github.com/komari-monitor/komari/internal/loginaudit"
 	"github.com/komari-monitor/komari/internal/metricstore"
 	"github.com/komari-monitor/komari/internal/plugin"
 	"github.com/komari-monitor/komari/internal/scheduler"
@@ -47,6 +48,11 @@ func (a *App) StartBackground() error {
 	registerScheduledWork()
 	a.addCleanup("scheduler", func(context.Context) error {
 		scheduler.StopAll()
+		return nil
+	})
+	stopLoginAudit := loginaudit.Start()
+	a.addCleanup("login-audit", func(context.Context) error {
+		stopLoginAudit()
 		return nil
 	})
 	return nil
@@ -207,6 +213,7 @@ func cleanupScheduledData() {
 	}
 	auditlog.RemoveOldLogs()
 	accounts.RemoveExpiredSessions()
+	loginaudit.Cleanup()
 }
 
 func compactMetricStore(ctx context.Context) {

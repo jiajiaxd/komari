@@ -38,7 +38,16 @@ type Settings struct {
 	ExpireNotificationLeadDays int     `json:"expire_notification_lead_days" default:"7"`  // 过期前多少天通知，默认7天
 	LoginNotification          bool    `json:"login_notification" default:"true"`          // 登录通知
 	TrafficLimitPercentage     float64 `json:"traffic_limit_percentage" default:"80.00"`   // 流量限制百分比，默认80.00%
-	UpdatedAt                  time.Time
+
+	// 节点 SSH/RDP 登录监控
+	LoginMonitorEnabled       bool   `json:"login_monitor_enabled" default:"true"`       // 是否记录 agent 上报的登录
+	LoginAlertEnabled         bool   `json:"login_alert_enabled" default:"true"`         // 非可信来源登录时是否发送通知
+	LoginAllowedRegions       string `json:"login_allowed_regions" default:""`           // 可信属地，逗号分隔：CN、CN-GD、US-CA
+	LoginTrustedIPs           string `json:"login_trusted_ips" default:""`               // 可信 IP/CIDR，逗号或换行分隔
+	LoginHistoryRetentionDays int    `json:"login_history_retention_days" default:"365"` // 登录记录保留天数
+	LoginHistoryMaxRecords    int    `json:"login_history_max_records" default:"1000"`   // 登录记录最大条数
+
+	UpdatedAt time.Time
 }
 
 const (
@@ -75,4 +84,11 @@ const (
 	UpdatedAtKey                  = "updated_at"
 	ThemeMarketSourcesKey         = "theme_market_sources"
 	PluginMarketSourcesKey        = "plugin_market_sources"
+
+	LoginMonitorEnabledKey       = "login_monitor_enabled"
+	LoginAlertEnabledKey         = "login_alert_enabled"
+	LoginAllowedRegionsKey       = "login_allowed_regions"
+	LoginTrustedIPsKey           = "login_trusted_ips"
+	LoginHistoryRetentionDaysKey = "login_history_retention_days"
+	LoginHistoryMaxRecordsKey    = "login_history_max_records"
 )
