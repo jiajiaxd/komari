@@ -301,3 +301,44 @@ func TestCompleteLegacyMonitoringMigrationFinalizesBeforeMarkingDone(t *testing.
 		t.Fatal("failed finalization wrote the completion marker")
 	}
 }
+
+func TestLegacyMonitoringMigrationRequiredSkipsScanWhenDone(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "done.db"))+"?mode=rwc"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		t.Cleanup(func() { _ = sqlDB.Close() })
+	} else {
+		t.Fatalf("sql db: %v", err)
+	}
+	appconfig.SetDb(db)
+	if err := db.AutoMigrate(&models.Record{}); err != nil {
+		t.Fatalf("migrate legacy table: %v", err)
+	}
+	if err := db.Create(&models.Record{Client: "client-a", Time: time.Now().UTC(), Cpu: 1}).Error; err != nil {
+		t.Fatalf("seed records: %v", err)
+	}
+
+	if err := appconfig.Set(legacyMonitoringMigrationDoneKey, false); err != nil {
+		t.Fatalf("reset completion marker: %v", err)
+	}
+	required, summary, err := LegacyMonitoringMigrationRequired(db)
+	if err != nil {
+		t.Fatalf("check before completion: %v", err)
+	}
+	if !required || summary.LoadRows != 1 {
+		t.Fatalf("before completion: required=%v summary=%#v", required, summary)
+	}
+
+	if err := appconfig.Set(legacyMonitoringMigrationDoneKey, true); err != nil {
+		t.Fatalf("set completion marker: %v", err)
+	}
+	required, summary, err = LegacyMonitoringMigrationRequired(db)
+	if err != nil {
+		t.Fatalf("check after completion: %v", err)
+	}
+	if required || summary != (LegacyMonitoringSummary{}) {
+		t.Fatalf("after completion: required=%v summary=%#v, want no scan", required, summary)
+	}
+}

@@ -84,6 +84,11 @@ func LegacyMonitoringMigrationRequired(db *gorm.DB) (bool, LegacyMonitoringSumma
 	if err != nil {
 		return false, LegacyMonitoringSummary{}, fmt.Errorf("read legacy monitoring migration marker: %w", err)
 	}
+	if done {
+		// Leftover legacy tables can hold millions of rows; counting and
+		// scanning them on every startup only delays the server.
+		return false, LegacyMonitoringSummary{}, nil
+	}
 	summary, err := InspectLegacyMonitoring(db)
 	if err != nil {
 		return false, LegacyMonitoringSummary{}, err

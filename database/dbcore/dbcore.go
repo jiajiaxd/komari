@@ -2,10 +2,12 @@ package dbcore
 
 import (
 	"archive/zip"
+	"compress/flate"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,14 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+// zipStoreThreshold 以上的文件（主要是 komari.db / metrics.db 这类大 SQLite 库）
+// 在启动备份中原样存储不压缩：Deflate 单线程只有几十 MB/s，GB 级的 metrics.db
+// 会让启动在备份阶段满载 CPU 数十秒甚至数分钟。
+const zipStoreThreshold = 8 << 20
+
+// upgradeBackupKeep 是 ./data/backup 中保留的升级备份（upgrade-*.zip）数量。
+const upgradeBackupKeep = 3
 
 // zipDirectoryExcluding 将 srcDir 打包为 dstZip，exclude 是绝对路径集合需要排除
 func zipDirectoryExcluding(srcDir, dstZip string, exclude map[string]struct{}) error {
@@ -37,6 +47,9 @@ func zipDirectoryExcluding(srcDir, dstZip string, exclude map[string]struct{}) e
 
 	zw := zip.NewWriter(out)
 	defer zw.Close()
+	zw.RegisterCompressor(zip.Deflate, func(w io.Writer) (io.WriteCloser, error) {
+		return flate.NewWriter(w, flate.BestSpeed)
+	})
 
 	absSrc, _ := filepath.Abs(srcDir)
 	walkErr := filepath.Walk(absSrc, func(path string, info os.FileInfo, err error) error {
@@ -71,7 +84,11 @@ func zipDirectoryExcluding(srcDir, dstZip string, exclude map[string]struct{}) e
 		if err != nil {
 			return err
 		}
-		w, err := zw.Create(zipName)
+		header := &zip.FileHeader{Name: zipName, Method: zip.Deflate, Modified: info.ModTime()}
+		if info.Size() >= zipStoreThreshold {
+			header.Method = zip.Store
+		}
+		w, err := zw.CreateHeader(header)
 		if err != nil {
 			fh.Close()
 			return err
@@ -271,8 +288,27 @@ func backupOnVersionUpgrade() {
 		return
 	}
 	logger.Infof("dbcore", "[upgrade-backup] ./data backed up to %s before upgrade (from %q to %q)", bakPath, prevVersion, versionID)
+	pruneUpgradeBackups(backupDir, upgradeBackupKeep)
 
 	writeVersionMarker()
+}
+
+// pruneUpgradeBackups 只保留 backupDir 中最新的 keep 个 upgrade-*.zip。
+// 文件名中的时间戳是 UTC 且定长，按名字排序即按时间排序。手动备份与
+// pre-restore-*.zip 不受影响。
+func pruneUpgradeBackups(backupDir string, keep int) {
+	matches, err := filepath.Glob(filepath.Join(backupDir, "upgrade-*.zip"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, path := range matches[:len(matches)-keep] {
+		if err := os.Remove(path); err != nil {
+			logger.Errorf("dbcore", "[upgrade-backup] failed to remove old backup %s: %v", path, err)
+			continue
+		}
+		logger.Infof("dbcore", "[upgrade-backup] removed old backup %s", path)
+	}
 }
 
 // writeVersionMarker 将当前 versionID 写入配置库。
