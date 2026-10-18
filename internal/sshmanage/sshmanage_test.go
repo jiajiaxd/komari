@@ -64,3 +64,24 @@ func TestNormalizeChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentTooOld(t *testing.T) {
+	for version, want := range map[string]bool{
+		"1.5.12-fork":              true,
+		"1.5.13-fork":              false,
+		"1.5.14":                   false,
+		"v1.6.0":                   false,
+		"1.1.80":                   true,
+		"2.0.0-fork":               false,
+		"Snapshot-2610171334-fork": true,
+		"Snapshot-2610180222-fork": false,
+		"Snapshot-2610180221-fork": true,
+		"snapshot-2611010000":      false,
+		"":                         false,
+		"dev-build":                false,
+	} {
+		if got := agentTooOld(version); got != want {
+			t.Errorf("agentTooOld(%q) = %v, want %v", version, got, want)
+		}
+	}
+}

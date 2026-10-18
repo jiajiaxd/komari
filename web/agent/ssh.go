@@ -14,7 +14,7 @@ const (
 	// The agent only has to pick the request up within this time; running it
 	// may take longer.
 	sshEventTTL     = 30 * time.Second
-	sshGetTimeout   = 30 * time.Second
+	sshGetTimeout   = 10 * time.Second
 	sshApplyTimeout = 150 * time.Second
 )
 
