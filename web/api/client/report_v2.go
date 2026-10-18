@@ -126,6 +126,15 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 			return v2.Error(req.ID, -32004, "unknown or expired startup configuration request", nil)
 		}
 		return v2.Success(req.ID, gin.H{"status": "success"})
+	case v2.MethodAgentSSHResult:
+		var params v2.SSHResult
+		if err := bindV2Params(req.Params, &params); err != nil {
+			return v2.Error(req.ID, -32602, "invalid ssh result", nil)
+		}
+		if !agent_runtime.ResolveSSH(uuid, params) {
+			return v2.Error(req.ID, -32004, "unknown or expired ssh request", nil)
+		}
+		return v2.Success(req.ID, gin.H{"status": "success"})
 	case v2.MethodAgentLoginEvent:
 		var params v2.LoginEventParams
 		if err := bindV2Params(req.Params, &params); err != nil {
