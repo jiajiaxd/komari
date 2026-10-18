@@ -35,7 +35,8 @@ func agentTooOld(version string) bool {
 		return false
 	}
 	if m := snapshotVersion.FindStringSubmatch(version); m != nil {
-		n, _ := strconv.Atoi(m[1])
+		// YYMMDDHHMM exceeds a 32-bit int.
+		n, _ := strconv.ParseInt(m[1], 10, 64)
 		return n < minSnapshot
 	}
 	return false
