@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
 	v2 "github.com/komari-monitor/komari/protocol/v2"
@@ -21,14 +22,13 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const concurrency = 16
-
 // Outcome statuses of one agent in a batch.
 const (
 	StatusOK          = "ok"
 	StatusFailed      = "failed"
 	StatusOffline     = "offline"
 	StatusUnsupported = "unsupported"
+	StatusOutdated    = "outdated"
 	StatusTimeout     = "timeout"
 )
 
@@ -161,14 +161,12 @@ func abbreviate(s string) string {
 func fanOut(ctx context.Context, uuids []string, action string, changes *v2.SSHChanges) []Outcome {
 	uuids = dedupe(uuids)
 	outcomes := make([]Outcome, len(uuids))
-	sem := make(chan struct{}, concurrency)
+	// Each call only waits on its agent, so there is no need to limit them.
 	var wg sync.WaitGroup
 	for i, uuid := range uuids {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			outcomes[i] = call(ctx, uuid, action, changes)
 		}()
 	}
@@ -184,6 +182,13 @@ func call(ctx context.Context, uuid, action string, changes *v2.SSHChanges) Outc
 	}
 	if !agent_runtime.IsV2Client(uuid) {
 		out.Status, out.Error = StatusUnsupported, "agent does not support the v2 protocol"
+		return out
+	}
+	// Old agents ignore the request; answer at once instead of waiting for
+	// the timeout.
+	if client, err := clients.GetClientByUUID(uuid); err == nil && agentTooOld(client.Version) {
+		out.Status, out.Error = StatusOutdated, "agent "+client.Version+" does not support SSH management, update it to 1.5.13-fork or later"
+		save(uuid, nil, out.Error)
 		return out
 	}
 	result, err := agent_runtime.CallSSH(ctx, uuid, action, changes)
