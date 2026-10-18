@@ -41,10 +41,13 @@ func init() {
 			{Name: "remove_keys", Type: "string[]", Description: "SHA256 fingerprints of keys to remove"},
 			{Name: "port", Type: "number", Description: "New SSH port; 0 keeps the current port"},
 			{Name: "root_password_login", Type: "boolean", Description: "Allow or forbid root password login; omit to keep"},
+			{Name: "2fa_code", Type: "string", Description: "Current 2FA code when two-factor authentication is enabled"},
 		},
 		Returns: "{ results: { uuid, status, error, result }[] }",
 		Example: map[string]any{"uuids": []string{"agent-uuid"}, "add_keys": []string{"ssh-ed25519 AAAA... me@laptop"}, "port": 2222, "root_password_login": false},
 	})
+	// Installing a root key is as powerful as remote execution.
+	rpc.MarkSensitive("admin:applySSHChanges")
 }
 
 func adminGetSSHStates(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
