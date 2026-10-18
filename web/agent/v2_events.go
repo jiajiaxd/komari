@@ -84,6 +84,8 @@ func EnqueueV2Event(uuid, method string, params any) v2.Event {
 		ttl = v2FileEventTTL
 	} else if method == v2.MethodAgentStartupConfig {
 		ttl = 20 * time.Second
+	} else if method == v2.MethodAgentSSH {
+		ttl = sshEventTTL
 	}
 	event := v2.Event{
 		ID:        newV2EventID(),

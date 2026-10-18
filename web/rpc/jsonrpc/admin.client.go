@@ -7,6 +7,7 @@ import (
 	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/internal/loginaudit"
 	"github.com/komari-monitor/komari/internal/metricstore"
+	"github.com/komari-monitor/komari/internal/sshmanage"
 	"github.com/komari-monitor/komari/database/records"
 	"github.com/komari-monitor/komari/pkg/rpc"
 	logger "github.com/komari-monitor/komari/utils/log"
@@ -137,6 +138,9 @@ func adminRemoveClient(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		logger.Warn("rpc", "failed to delete login records of removed client", "uuid", params.UUID, "error", err)
 	}
 	loginaudit.InvalidateServerIPs()
+	if err := sshmanage.Delete(params.UUID); err != nil {
+		logger.Warn("rpc", "failed to delete ssh state of removed client", "uuid", params.UUID, "error", err)
+	}
 	actor, ip := auditActor(ctx)
 	auditlog.Log(ip, actor, "delete client:"+params.UUID, "warn")
 	agent_runtime.DeleteConnectedClients(params.UUID)
