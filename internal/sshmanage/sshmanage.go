@@ -193,6 +193,7 @@ func call(ctx context.Context, uuid, action string, changes *v2.SSHChanges) Outc
 		return out
 	case errors.Is(err, agent_runtime.ErrSSHTimeout):
 		out.Status, out.Error = StatusTimeout, err.Error()
+		save(uuid, nil, out.Error)
 		return out
 	case err != nil:
 		out.Status, out.Error = StatusFailed, err.Error()
