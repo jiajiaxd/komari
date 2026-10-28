@@ -505,6 +505,7 @@ func doInitialize() error {
 		&models.PluginConfiguration{},
 		&models.LoginRecord{},
 		&models.SSHState{},
+		&models.SSHKeyRemark{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create tables: %w", err)

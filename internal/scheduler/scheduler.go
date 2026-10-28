@@ -31,12 +31,13 @@ func (s everySchedule) Next(t time.Time) time.Time {
 }
 
 type cronSchedule struct {
-	seconds map[int]struct{}
-	minutes map[int]struct{}
-	hours   map[int]struct{}
-	dom     map[int]struct{}
-	months  map[int]struct{}
-	dow     map[int]struct{}
+	location *time.Location
+	seconds  map[int]struct{}
+	minutes  map[int]struct{}
+	hours    map[int]struct{}
+	dom      map[int]struct{}
+	months   map[int]struct{}
+	dow      map[int]struct{}
 }
 
 func (s cronSchedule) Next(t time.Time) time.Time {
@@ -52,7 +53,11 @@ func (s cronSchedule) Next(t time.Time) time.Time {
 }
 
 func (s cronSchedule) match(t time.Time) bool {
-	t = t.In(time.Local)
+	location := s.location
+	if location == nil {
+		location = time.Local
+	}
+	t = t.In(location)
 	_, okSecond := s.seconds[t.Second()]
 	_, okMinute := s.minutes[t.Minute()]
 	_, okHour := s.hours[t.Hour()]
@@ -84,6 +89,11 @@ func AddContextFunc(name string, spec string, runImmediately bool, fn Func) erro
 	return defaultManager.AddContextFunc(name, spec, runImmediately, fn)
 }
 
+// AddContextFuncInLocation schedules wall-clock work in an explicit timezone.
+func AddContextFuncInLocation(name, spec string, location *time.Location, runImmediately bool, fn Func) error {
+	return defaultManager.addContextFunc(name, spec, location, runImmediately, fn)
+}
+
 func Every(duration time.Duration) string {
 	return "@every " + duration.String()
 }
@@ -105,6 +115,10 @@ func (m *Manager) AddFunc(name string, spec string, fn func()) error {
 }
 
 func (m *Manager) AddContextFunc(name string, spec string, runImmediately bool, fn Func) error {
+	return m.addContextFunc(name, spec, nil, runImmediately, fn)
+}
+
+func (m *Manager) addContextFunc(name, spec string, location *time.Location, runImmediately bool, fn Func) error {
 	if name == "" {
 		return fmt.Errorf("corn job name is empty")
 	}
@@ -114,6 +128,10 @@ func (m *Manager) AddContextFunc(name string, spec string, runImmediately bool, 
 	}
 	if fn == nil {
 		return fmt.Errorf("corn job %q func is nil", name)
+	}
+	if cron, ok := s.(cronSchedule); ok {
+		cron.location = location
+		s = cron
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

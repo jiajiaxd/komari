@@ -19,7 +19,16 @@ func init() {
 	RegisterWithGroupAndMeta("getSSHStates", rpc.RoleAdmin, adminGetSSHStates, &rpc.MethodMeta{
 		Name:    "admin:getSSHStates",
 		Summary: "List the last reported SSH settings of every node",
-		Returns: "{ states: { uuid, state, state_at, error, checked_at }[] }",
+		Returns: "{ states: { uuid, state, state_at, error, checked_at }[], remarks: { fingerprint: remark } }",
+	})
+	RegisterWithGroupAndMeta("setSSHKeyRemark", rpc.RoleAdmin, adminSetSSHKeyRemark, &rpc.MethodMeta{
+		Name:    "admin:setSSHKeyRemark",
+		Summary: "Set a panel remark for an SSH public key across all nodes",
+		Params: []rpc.ParamMeta{
+			{Name: "fingerprint", Type: "string", Required: true, Description: "SHA256 public key fingerprint"},
+			{Name: "remark", Type: "string", Required: true, Description: "Up to 200 characters; empty restores the original key comment"},
+		},
+		Returns: "{ fingerprint, remark }",
 	})
 	RegisterWithGroupAndMeta("refreshSSHStates", rpc.RoleAdmin, adminRefreshSSHStates, &rpc.MethodMeta{
 		Name:        "admin:refreshSSHStates",
@@ -55,7 +64,31 @@ func adminGetSSHStates(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Json
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to load SSH states: "+err.Error(), nil)
 	}
-	return map[string]any{"states": states}, nil
+	remarks, err := sshmanage.ListRemarks()
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "Failed to load SSH key remarks: "+err.Error(), nil)
+	}
+	return map[string]any{"states": states, "remarks": remarks}, nil
+}
+
+func adminSetSSHKeyRemark(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var params struct {
+		Fingerprint string  `json:"fingerprint"`
+		Remark      *string `json:"remark"`
+	}
+	if err := req.BindParams(&params); err != nil || params.Remark == nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, "fingerprint and remark are required", nil)
+	}
+	fingerprint, remark, err := sshmanage.NormalizeRemark(params.Fingerprint, *params.Remark)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	if err := sshmanage.SetRemark(fingerprint, remark); err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "Failed to save SSH key remark: "+err.Error(), nil)
+	}
+	actor, ip := auditActor(ctx)
+	auditlog.Log(ip, actor, "updated SSH key remark: "+fingerprint, "info")
+	return map[string]string{"fingerprint": fingerprint, "remark": remark}, nil
 }
 
 func adminRefreshSSHStates(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
