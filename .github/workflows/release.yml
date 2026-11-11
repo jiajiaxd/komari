@@ -10,6 +10,10 @@ on:
         description: Release tag to build and attach assets to.
         required: true
         type: string
+      frontend_ref:
+        description: Optional komari-web tag or branch to build.
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -30,9 +34,10 @@ jobs:
       - id: release
         env:
           TAG: ${{ env.RELEASE_TAG }}
+          FRONTEND_REF: ${{ inputs.frontend_ref }}
         run: |
-          frontend_ref=""
-          if [[ "$TAG" =~ ^(.+)-fix[0-9]+$ ]]; then
+          frontend_ref="$FRONTEND_REF"
+          if [ -z "$frontend_ref" ] && [[ "$TAG" =~ ^(.+)-fix[0-9]+$ ]]; then
             frontend_ref="${BASH_REMATCH[1]}"
           fi
           echo "frontend_ref=$frontend_ref" >> "$GITHUB_OUTPUT"

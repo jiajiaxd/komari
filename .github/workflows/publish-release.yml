@@ -9,6 +9,10 @@ on:
         description: "Release tag, e.g. 1.5.2-fork"
         required: true
         type: string
+      frontend_ref:
+        description: "Optional komari-web tag or branch to build into the release."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -72,6 +76,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ inputs.tag }}
+      frontend_ref: ${{ inputs.frontend_ref }}
     permissions:
       contents: write
       packages: write
