@@ -201,7 +201,7 @@ func registerAdminRoutes(r *gin.Engine) {
 		session.POST("/remove/all", jsonRpc.Bind("admin:deleteAllSessions"))
 	}
 
-	g.GET("/logs", jsonRpc.Bind("admin:getLogs", jsonRpc.WithQuery("limit", "page")))
+	g.GET("/logs", jsonRpc.Bind("admin:getLogs", jsonRpc.WithQuery("limit", "page", "msg_type", "q")))
 	g.GET("/login-records", jsonRpc.Bind("admin:getLoginRecords", jsonRpc.WithQuery("limit", "page", "uuid", "untrusted_only")))
 	g.POST("/login-records/clear", jsonRpc.Bind("admin:clearLoginRecords"))
 
