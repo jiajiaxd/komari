@@ -1,12 +1,66 @@
 package terminal
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/komari-monitor/komari/database/auditlog"
 	"github.com/komari-monitor/komari/web/connection"
 )
+
+var (
+	terminalPingInterval = 30 * time.Second
+	terminalReadWait     = 75 * time.Second
+	terminalWriteWait    = 10 * time.Second
+)
+
+// startTerminalKeepalive configures WebSocket Ping/Pong keepalive and read
+// deadlines so reverse proxies do not drop idle waiting connections and
+// half-open sockets (e.g. sleeping browser) are detected promptly.
+func startTerminalKeepalive(conn *connection.SafeConn) (stop func(), refreshReadDeadline func()) {
+	if conn == nil {
+		return func() {}, func() {}
+	}
+	readWait := terminalReadWait
+	writeWait := terminalWriteWait
+	pingInterval := terminalPingInterval
+
+	refresh := func() {
+		_ = conn.SetReadDeadline(time.Now().Add(readWait))
+	}
+	refresh()
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readWait))
+	})
+	conn.SetPingHandler(func(data string) error {
+		if err := conn.SetReadDeadline(time.Now().Add(readWait)); err != nil {
+			return err
+		}
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(writeWait))
+	})
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(done) })
+	}, refresh
+}
 
 // ForwardTerminal pumps frames between the browser and the agent until one of
 // them ends the session. An unexpected break suspends only the broken side and
@@ -21,16 +75,30 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 	if browser == nil || agent == nil {
 		return
 	}
+	establishedTime := time.Now().UTC()
 	TerminalSessionsMutex.Lock()
 	session := TerminalSessions[id]
-	requesterIp, userUUID := "", ""
-	var stop chan struct{}
+	requesterIp, userUUID, clientUUID := "", "", ""
+	var (
+		stop         chan struct{}
+		prevDuration time.Duration
+		connects     int
+		startedAt    time.Time
+	)
 	startBrowser, startAgent := false, false
 	if session != nil && session.Browser == browser && session.Agent == agent {
-		requesterIp, userUUID = session.RequesterIp, session.UserUUID
+		requesterIp, userUUID, clientUUID = session.RequesterIp, session.UserUUID, session.UUID
 		stopForwardWaitLocked(session)
 		stop = make(chan struct{})
 		session.forwardStop = stop
+		session.activeForwarders++
+		session.auditConnects++
+		if session.auditStartedAt.IsZero() {
+			session.auditStartedAt = establishedTime
+		}
+		prevDuration = session.auditDuration
+		connects = session.auditConnects
+		startedAt = session.auditStartedAt
 		if session.browserPump != browser {
 			session.browserPump = browser
 			startBrowser = true
@@ -45,8 +113,24 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 		return
 	}
 
-	auditlog.Log(requesterIp, userUUID, "established, terminal id:"+id, "terminal")
-	establishedTime := time.Now()
+	session.auditMu.Lock()
+	if session.auditClient == "" && clientUUID != "" {
+		session.auditClient = auditlog.FormatClientUUID(clientUUID)
+	}
+	activeMsg := formatTerminalAuditMessage(terminalAuditSnapshot{
+		clientLabel: session.auditClient,
+		terminalID:  id,
+		status:      "active",
+		duration:    prevDuration,
+		connects:    connects,
+		startedAt:   startedAt,
+	})
+	if session.auditLogID == 0 {
+		session.auditLogID = auditlog.LogWithID(requesterIp, userUUID, activeMsg, "terminal")
+	} else {
+		auditlog.UpdateMessage(session.auditLogID, activeMsg)
+	}
+	session.auditMu.Unlock()
 
 	if startBrowser {
 		go pumpBrowserFrames(id, browser)
@@ -56,7 +140,45 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 	}
 
 	<-stop
-	auditlog.Log(requesterIp, userUUID, "disconnected, terminal id:"+id+", duration:"+time.Since(establishedTime).String(), "terminal")
+	segmentDuration := time.Since(establishedTime)
+
+	session.auditMu.Lock()
+	TerminalSessionsMutex.Lock()
+	session.auditDuration += segmentDuration
+	if session.activeForwarders > 0 {
+		session.activeForwarders--
+	}
+	remainingForwarders := session.activeForwarders
+	totalDuration := session.auditDuration
+	finalConnects := session.auditConnects
+	finalStarted := session.auditStartedAt
+	stillRetained := TerminalSessions[id] == session
+	endReason := session.auditEndReason
+	TerminalSessionsMutex.Unlock()
+
+	// Only write a suspended/final update if no newer ForwardTerminal took over.
+	if session.auditLogID != 0 && remainingForwarders == 0 {
+		status := "suspended"
+		var endedAt time.Time
+		if !stillRetained {
+			status = endReason
+			if status == "" {
+				status = "closed"
+			}
+			endedAt = time.Now().UTC()
+		}
+		auditlog.UpdateMessage(session.auditLogID, formatTerminalAuditMessage(terminalAuditSnapshot{
+			logID:       session.auditLogID,
+			clientLabel: session.auditClient,
+			terminalID:  id,
+			status:      status,
+			duration:    totalDuration,
+			connects:    finalConnects,
+			startedAt:   finalStarted,
+			endedAt:     endedAt,
+		}))
+	}
+	session.auditMu.Unlock()
 }
 
 func currentAgentForBrowser(id string, browser *connection.SafeConn) (*connection.SafeConn, bool) {
@@ -80,18 +202,24 @@ func currentBrowserForAgent(id string, agent *connection.SafeConn) (*connection.
 }
 
 func pumpBrowserFrames(id string, browser *connection.SafeConn) {
+	stopKeepalive, refreshReadDeadline := startTerminalKeepalive(browser)
+	defer stopKeepalive()
+
 	for {
 		messageType, data, err := browser.ReadMessage()
 		if err != nil {
 			suspendBrowser(id, browser)
 			return
 		}
+		refreshReadDeadline()
 		if messageType == websocket.TextMessage {
 			if control, ok := parseControl(data); ok {
 				switch control.Type {
 				case controlTypeTerminate, "close":
 					// 浏览器主动结束：closeSession 会把 terminate 转给被控端。
-					closeSession(id)
+					if _, active := currentAgentForBrowser(id, browser); active {
+						closeSession(id)
+					}
 					return
 				}
 				agent, active := currentAgentForBrowser(id, browser)
@@ -122,18 +250,24 @@ func pumpBrowserFrames(id string, browser *connection.SafeConn) {
 }
 
 func pumpAgentFrames(id string, agent *connection.SafeConn) {
+	stopKeepalive, refreshReadDeadline := startTerminalKeepalive(agent)
+	defer stopKeepalive()
+
 	for {
 		messageType, data, err := agent.ReadMessage()
 		if err != nil {
 			suspendAgent(id, agent)
 			return
 		}
+		refreshReadDeadline()
 		if messageType == websocket.TextMessage {
 			if control, ok := parseControl(data); ok {
 				switch control.Type {
 				case controlTypeTerminate:
 					// 被控端结束（shell 退出等）：closeSession 会转给浏览器。
-					closeSession(id)
+					if _, active := currentBrowserForAgent(id, agent); active {
+						closeSession(id)
+					}
 					return
 				case controlTypeHeartbeat:
 					browser, active := currentBrowserForAgent(id, agent)

@@ -1,50 +1,173 @@
 package terminal
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/komari-monitor/komari/database/auditlog"
 	"github.com/komari-monitor/komari/web/connection"
 )
 
 type TerminalSession struct {
-	UUID        string
-	UserUUID    string
-	Browser     *connection.SafeConn
-	Agent       *connection.SafeConn
-	RequesterIp string
-	Forwarding  bool
+	UUID            string
+	UserUUID        string
+	Browser         *connection.SafeConn
+	BrowserClientID string
+	Agent           *connection.SafeConn
+	RequesterIp     string
+	CreatedAt       time.Time
+	Forwarding      bool
 	// browserPump / agentPump 确保同一条 SafeConn 至多只启动一个读循环协程；
 	// forwardStop 在单边断线或正常结束时关闭，唤醒当前活跃的 ForwardTerminal。
 	browserPump *connection.SafeConn
 	agentPump   *connection.SafeConn
 	forwardStop chan struct{}
 	// CleanupTimer bounds how long a suspended session waits for a reconnect.
-	CleanupTimer *time.Timer
+	// cleanupGen 与 cleanupDeadline 保证每次挂起只使用一个固定截止时间，
+	// 不会因对端在反代/网络空闲断开后反复重连而无限续期，也避免旧定时器回调误杀新恢复的会话。
+	CleanupTimer    *time.Timer
+	cleanupGen      uint64
+	cleanupDeadline time.Time
+
+	// 审计日志单条聚合状态：同一终端会话只写入一条日志，在重连/挂起/结束时原地更新。
+	// 锁顺序固定为 session.auditMu -> TerminalSessionsMutex，严禁反向加锁。
+	auditMu          sync.Mutex
+	auditLogID       uint
+	auditClient      string
+	auditDuration    time.Duration
+	auditConnects    int
+	auditStartedAt   time.Time
+	auditEndReason   string
+	activeForwarders int
+}
+
+type terminalAuditSnapshot struct {
+	logID       uint
+	clientLabel string
+	terminalID  string
+	status      string
+	duration    time.Duration
+	connects    int
+	startedAt   time.Time
+	endedAt     time.Time
+}
+
+func formatTerminalAuditMessage(s terminalAuditSnapshot) string {
+	parts := make([]string, 0, 5)
+	if s.clientLabel != "" {
+		parts = append(parts, "client="+s.clientLabel)
+	}
+	parts = append(parts, "terminal_id="+s.terminalID)
+	if s.status != "" {
+		parts = append(parts, "status="+s.status)
+	}
+	if s.status != "active" || s.duration > 0 {
+		parts = append(parts, "duration="+s.duration.Round(time.Millisecond).String())
+	}
+	if s.connects > 1 {
+		parts = append(parts, fmt.Sprintf("reconnects=%d", s.connects-1))
+	}
+	summary := "Terminal session: " + strings.Join(parts, ", ")
+	if !s.startedAt.IsZero() {
+		timeParts := []string{"Started: " + s.startedAt.In(time.Local).Format("2006-01-02 15:04:05")}
+		if !s.endedAt.IsZero() {
+			timeParts = append(timeParts, "Ended: "+s.endedAt.In(time.Local).Format("2006-01-02 15:04:05"))
+		}
+		return auditlog.JoinLines(summary, strings.Join(timeParts, ", "))
+	}
+	return summary
+}
+
+// finalizeSessionAudit updates the session's single audit log row when the
+// session ends while idle/suspended (no ForwardTerminal goroutine running).
+// Must be called WITHOUT holding TerminalSessionsMutex.
+func finalizeSessionAudit(id string, session *TerminalSession) {
+	if session == nil {
+		return
+	}
+	session.auditMu.Lock()
+	defer session.auditMu.Unlock()
+
+	if session.auditLogID == 0 {
+		return
+	}
+
+	TerminalSessionsMutex.Lock()
+	active := session.activeForwarders
+	duration := session.auditDuration
+	connects := session.auditConnects
+	startedAt := session.auditStartedAt
+	reason := session.auditEndReason
+	TerminalSessionsMutex.Unlock()
+
+	if active > 0 {
+		return
+	}
+	if reason == "" {
+		reason = "closed"
+	}
+	auditlog.UpdateMessage(session.auditLogID, formatTerminalAuditMessage(terminalAuditSnapshot{
+		logID:       session.auditLogID,
+		clientLabel: session.auditClient,
+		terminalID:  id,
+		status:      reason,
+		duration:    duration,
+		connects:    connects,
+		startedAt:   startedAt,
+		endedAt:     time.Now().UTC(),
+	}))
 }
 
 var TerminalSessionsMutex = &sync.Mutex{}
 var TerminalSessions = make(map[string]*TerminalSession)
 
 // 与 v2 事件队列 TTL 对齐：意外断开后，会话在这段时间内可被重连复用。
-const terminalSessionRetention = 5 * time.Minute
+var terminalSessionRetention = 5 * time.Minute
 
-// scheduleCleanup 在会话下次被回收时清理。重连成功会取消它。
+// scheduleCleanup 在会话首次进入挂起态时安排回收定时器。
+// 已处于挂起倒计时中时不再重置截止时间，避免对端反复断线重连导致会话无限续期；
+// 只有双方重新全部就位调用 stopCleanup 后，下一次挂起才会获得新的保留窗口。
 func scheduleCleanup(id string, session *TerminalSession) {
+	if session == nil {
+		return
+	}
+	if session.CleanupTimer != nil && !session.cleanupDeadline.IsZero() {
+		return
+	}
 	if session.CleanupTimer != nil {
 		session.CleanupTimer.Stop()
 	}
-	session.CleanupTimer = time.AfterFunc(terminalSessionRetention, func() {
+	retention := terminalSessionRetention
+	session.cleanupGen++
+	gen := session.cleanupGen
+	session.cleanupDeadline = time.Now().Add(retention)
+	session.CleanupTimer = time.AfterFunc(retention, func() {
 		var browser, agent *connection.SafeConn
 
 		TerminalSessionsMutex.Lock()
-		if current, ok := TerminalSessions[id]; !ok || current != session {
+		if current, ok := TerminalSessions[id]; !ok || current != session || session.cleanupGen != gen {
 			TerminalSessionsMutex.Unlock()
 			return
 		}
+		if session.Browser != nil && session.Agent != nil {
+			TerminalSessionsMutex.Unlock()
+			return
+		}
+		session.CleanupTimer = nil
+		session.cleanupDeadline = time.Time{}
 		browser, agent = session.Browser, session.Agent
+		if session.auditEndReason == "" {
+			session.auditEndReason = "expired"
+		}
+		if session.UUID != "" {
+			recordTerminatedSessionLocked(id, session.UUID)
+		}
 		delete(TerminalSessions, id)
 		TerminalSessionsMutex.Unlock()
+
+		finalizeSessionAudit(id, session)
 
 		// 等不到重连：告诉仍在线的对端这是终态，别再等了。
 		if browser != nil {
@@ -59,6 +182,11 @@ func scheduleCleanup(id string, session *TerminalSession) {
 }
 
 func stopCleanup(session *TerminalSession) {
+	if session == nil {
+		return
+	}
+	session.cleanupGen++
+	session.cleanupDeadline = time.Time{}
 	if session.CleanupTimer != nil {
 		session.CleanupTimer.Stop()
 		session.CleanupTimer = nil
@@ -81,6 +209,7 @@ func suspendSide(id string, conn *connection.SafeConn, matchBrowser bool) {
 	clientUUID := ""
 	if matchBrowser {
 		session.Browser = nil
+		session.BrowserClientID = ""
 		survivor = session.Agent
 	} else {
 		session.Agent = nil
@@ -112,15 +241,25 @@ func suspendAgent(id string, conn *connection.SafeConn)   { suspendSide(id, conn
 // 收到的一方不会再重连，所以这里可以直接关闭连接。
 func closeSession(id string) {
 	var browser, agent *connection.SafeConn
+	var closedSession *TerminalSession
 
 	TerminalSessionsMutex.Lock()
 	if session, ok := TerminalSessions[id]; ok && session != nil {
 		stopCleanup(session)
+		if session.auditEndReason == "" {
+			session.auditEndReason = "closed"
+		}
 		stopForwardWaitLocked(session)
 		browser, agent = session.Browser, session.Agent
+		closedSession = session
+		if session.UUID != "" {
+			recordTerminatedSessionLocked(id, session.UUID)
+		}
 		delete(TerminalSessions, id)
 	}
 	TerminalSessionsMutex.Unlock()
+
+	finalizeSessionAudit(id, closedSession)
 
 	if browser != nil {
 		notifyTerminate(browser)
@@ -132,20 +271,39 @@ func closeSession(id string) {
 	}
 }
 
+func canAttachBrowserLocked(session *TerminalSession, clientUUID, userUUID string, apiKey bool, clientID string) (allowed bool, alreadyAttached bool) {
+	if session == nil || session.UUID != clientUUID || (!apiKey && session.UserUUID != userUUID) {
+		return false, false
+	}
+	if session.Browser != nil && (clientID == "" || session.BrowserClientID != clientID) {
+		return false, true
+	}
+	return true, false
+}
+
+func hasAttachedAgent(id string) bool {
+	TerminalSessionsMutex.Lock()
+	defer TerminalSessionsMutex.Unlock()
+	session := TerminalSessions[id]
+	return session != nil && session.Agent != nil
+}
+
 func attachBrowser(id, clientUUID, userUUID string, apiKey bool, conn *connection.SafeConn) (*TerminalSession, bool) {
+	session, _, ok := attachBrowserWithClientID(id, clientUUID, userUUID, apiKey, conn, "")
+	return session, ok
+}
+
+func attachBrowserWithClientID(id, clientUUID, userUUID string, apiKey bool, conn *connection.SafeConn, clientID string) (*TerminalSession, bool, bool) {
 	TerminalSessionsMutex.Lock()
 	session, ok := TerminalSessions[id]
-	if !ok || session == nil {
+	if allowed, _ := canAttachBrowserLocked(session, clientUUID, userUUID, apiKey, clientID); !ok || !allowed {
 		TerminalSessionsMutex.Unlock()
-		return nil, false
-	}
-	if session.UUID != clientUUID || (!apiKey && session.UserUUID != userUUID) {
-		TerminalSessionsMutex.Unlock()
-		return nil, false
+		return nil, false, false
 	}
 	oldBrowser := session.Browser
 	oldAgent := session.Agent
 	session.Browser = conn
+	session.BrowserClientID = clientID
 	session.Forwarding = false
 	startPump := conn != nil && session.browserPump != conn
 	if startPump {
@@ -165,11 +323,13 @@ func attachBrowser(id, clientUUID, userUUID string, apiKey bool, conn *connectio
 	if startPump {
 		go pumpBrowserFrames(id, conn)
 	}
-	// 重连的浏览器要立刻知道自己回到了哪一步：被控端已在位就算就绪。
+	// 重连的浏览器要立刻知道自己回到了哪一步：被控端已在位就算就绪；
+	// 同时通知被控端浏览器已恢复，便于被控端立即取消本地挂起倒计时（旧版被控端会前向兼容忽略 ready）。
 	if oldAgent != nil {
 		notifyReady(conn)
+		notifyReady(oldAgent)
 	}
-	return session, true
+	return session, oldAgent != nil, true
 }
 
 func attachAgent(id string, conn *connection.SafeConn) (*TerminalSession, bool) {
