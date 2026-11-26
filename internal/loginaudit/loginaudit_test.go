@@ -38,6 +38,50 @@ func TestParseRegionsAndTrustedIPs(t *testing.T) {
 	}
 }
 
+func TestAddTrustedIPPreservesExistingEntries(t *testing.T) {
+	setupDB(t)
+	const existing = "203.0.113.0/24, 2001:db8:1::/48"
+	if err := config.Set(config.LoginTrustedIPsKey, existing); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := config.Set(config.LoginTrustedIPsKey, ""); err != nil {
+			t.Error(err)
+		}
+	})
+
+	if added, err := AddTrustedIP(net.ParseIP("203.0.113.10")); err != nil || added {
+		t.Fatalf("covered IP: added=%v err=%v", added, err)
+	}
+
+	const ipv4, ipv6 = "198.51.100.4", "2001:db8:2::4"
+	results := make(chan error, 2)
+	for _, ip := range []string{ipv4, ipv6} {
+		go func() {
+			added, err := AddTrustedIP(net.ParseIP(ip))
+			if err == nil && !added {
+				err = errors.New("IP was not added: " + ip)
+			}
+			results <- err
+		}()
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	if added, err := AddTrustedIP(net.ParseIP("2001:db8:2:0:0:0:0:4")); err != nil || added {
+		t.Fatalf("duplicate IPv6: added=%v err=%v", added, err)
+	}
+	value, err := config.GetAs[string](config.LoginTrustedIPsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != existing+"\n"+ipv4+"\n"+ipv6 && value != existing+"\n"+ipv6+"\n"+ipv4 {
+		t.Fatalf("unexpected trusted IPs: %q", value)
+	}
+}
+
 func TestRulesMatching(t *testing.T) {
 	trusted, _ := ParseTrustedIPs("203.0.113.0/24")
 	r := rules{

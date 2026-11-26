@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -404,6 +405,37 @@ func Set(key string, value any) error {
 	newVal := map[string]any{key: value}
 	publishEvent(oldVal, newVal)
 	return nil
+}
+
+// UpdateString updates a setting using its current value in a write transaction.
+func UpdateString(key string, update func(string) string) (bool, error) {
+	var oldValue, newValue string
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var item ConfigItem
+		err := tx.First(&item, "key = ?", key).Error
+		switch {
+		case err == nil:
+			if err := json.Unmarshal([]byte(item.Value), &oldValue); err != nil {
+				return err
+			}
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
+		newValue = update(oldValue)
+		if newValue == oldValue {
+			return nil
+		}
+		encoded, err := json.Marshal(newValue)
+		if err != nil {
+			return err
+		}
+		return tx.Save(&ConfigItem{Key: key, Value: string(encoded)}).Error
+	})
+	if err != nil || newValue == oldValue {
+		return false, err
+	}
+	publishEvent(map[string]any{key: oldValue}, map[string]any{key: newValue})
+	return true, nil
 }
 
 func SetMany(cst map[string]any) error {

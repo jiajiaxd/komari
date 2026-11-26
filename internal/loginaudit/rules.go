@@ -3,6 +3,8 @@ package loginaudit
 import (
 	"net"
 	"strings"
+
+	"github.com/komari-monitor/komari/internal/config"
 )
 
 // 可信原因
@@ -53,6 +55,26 @@ func ParseTrustedIPs(s string) (nets []*net.IPNet, invalid []string) {
 	return nets, invalid
 }
 
+// AddTrustedIP adds a single IP unless the allowlist already covers it.
+func AddTrustedIP(ip net.IP) (bool, error) {
+	return config.UpdateString(config.LoginTrustedIPsKey, func(current string) string {
+		nets, _ := ParseTrustedIPs(current)
+		if IsAllowlisted(ip, nets) {
+			return current
+		}
+		return strings.TrimSpace(strings.TrimSpace(current) + "\n" + normalizeIP(ip))
+	})
+}
+
+func IsAllowlisted(ip net.IP, nets []*net.IPNet) bool {
+	for _, network := range nets {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseRegions 解析可信属地列表：国家代码（CN）或国家-省州代码（CN-GD、US-CA），大小写不敏感。
 func ParseRegions(s string) map[string]struct{} {
 	regions := make(map[string]struct{})
@@ -91,10 +113,8 @@ func (r rules) trustWithoutGeo(ip net.IP) string {
 	if _, ok := r.serverIPs[normalizeIP(ip)]; ok {
 		return ReasonServer
 	}
-	for _, n := range r.trusted {
-		if n.Contains(ip) {
-			return ReasonWhitelist
-		}
+	if IsAllowlisted(ip, r.trusted) {
+		return ReasonWhitelist
 	}
 	return ""
 }

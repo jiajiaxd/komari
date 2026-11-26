@@ -2,10 +2,13 @@ package jsonrpc
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
 
 	"github.com/komari-monitor/komari/database/auditlog"
+	"github.com/komari-monitor/komari/database/models"
+	"github.com/komari-monitor/komari/internal/config"
 	"github.com/komari-monitor/komari/internal/loginaudit"
 	"github.com/komari-monitor/komari/pkg/rpc"
 )
@@ -32,6 +35,14 @@ func init() {
 			{Name: "uuid", Type: "string", Description: "Only delete records of this client; empty deletes all"},
 		},
 		Returns: "{ deleted: number }",
+	})
+	RegisterWithGroupAndMeta("trustLoginSource", rpc.RoleAdmin, adminTrustLoginSource, &rpc.MethodMeta{
+		Name:    "admin:trustLoginSource",
+		Summary: "Add a login source IP to the trusted IP allowlist",
+		Params: []rpc.ParamMeta{
+			{Name: "source_ip", Type: "string", Description: "IPv4 or IPv6 address to trust"},
+		},
+		Returns: "{ added: boolean }",
 	})
 }
 
@@ -60,7 +71,45 @@ func adminGetLoginRecords(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to retrieve login records: "+err.Error(), nil)
 	}
-	return map[string]any{"records": records, "total": total}, nil
+	configuredIPs, err := config.GetAs[string](config.LoginTrustedIPsKey)
+	if err != nil {
+		configuredIPs = ""
+	}
+	trustedNetworks, _ := loginaudit.ParseTrustedIPs(configuredIPs)
+	type listedRecord struct {
+		models.LoginRecord
+		SourceAllowlisted bool `json:"source_allowlisted"`
+	}
+	listed := make([]listedRecord, 0, len(records))
+	for _, record := range records {
+		listed = append(listed, listedRecord{
+			LoginRecord:       record,
+			SourceAllowlisted: loginaudit.IsAllowlisted(net.ParseIP(record.SourceIP), trustedNetworks),
+		})
+	}
+	return map[string]any{"records": listed, "total": total}, nil
+}
+
+func adminTrustLoginSource(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var params struct {
+		SourceIP string `json:"source_ip"`
+	}
+	if err := req.BindParams(&params); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, "Invalid login source", nil)
+	}
+	source := net.ParseIP(strings.TrimSpace(params.SourceIP))
+	if source == nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, "Invalid login source IP", nil)
+	}
+	added, err := loginaudit.AddTrustedIP(source)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "Failed to trust login source: "+err.Error(), nil)
+	}
+	if added {
+		actor, ip := auditActor(ctx)
+		auditlog.Log(ip, actor, "Add trusted login source: "+source.String(), "info")
+	}
+	return map[string]any{"added": added}, nil
 }
 
 func adminClearLoginRecords(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
